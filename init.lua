@@ -40,16 +40,40 @@ for _, v in pairs(compost.compostable_nodes) do
 	compost.compostable_items[v] = true
 end
 
+compost.rare_seeds = {}
+
+local seeds_dedup = {}
+-- add simple decorations (flowers, grass, mushrooms) to rare seeds list
+for _, deco in pairs(minetest.registered_decorations) do
+	if deco.deco_type == "simple" then
+		local entry = deco.decoration
+		local list = minetest.get_node_drops(entry)
+		for _, itemname in ipairs(list) do
+			seeds_dedup[itemname] = true
+		end
+	end
+end
+-- add saplings and flowers by group to the rare seeds list
+for _, item in pairs(minetest.registered_items) do
+	if item.groups.sapling or item.groups.flower then
+		seeds_dedup[item.name] = true
+	end
+end
+-- add to indexed table
+for k,_ in pairs(seeds_dedup) do
+	table.insert(compost.rare_seeds, k)
+end
+
+
 local function formspec(pos, progress)
 	local spos = pos.x..','..pos.y..','..pos.z
 	local formspec =
 		'size[8,8.5]'..
-		'list[nodemeta:'..spos..';src;2,1;2,2;]'..
-		'list[nodemeta:'..spos..';dst;5,1.5;1,1;]'..
-		"image[4,1.5;1,1;gui_furnace_arrow_bg.png^[lowpart:"..
+		'list[nodemeta:'..spos..';src;0.5,1;4,2;]'..
+		'list[nodemeta:'..spos..';dst;5.5,1;2,2;]'..
+		"image[4.5,1.5;1,1;gui_furnace_arrow_bg.png^[lowpart:"..
 		(progress)..":gui_furnace_arrow_fg.png^[transformR270]"..
-		'list[current_player;main;0,4.25;8,1;]'..
-		'list[current_player;main;0,5.5;8,3;8]'..
+		'list[current_player;main;0,4.25;8,4;]'..
 		'listring[nodemeta:'..spos ..';dst]'..
 		'listring[current_player;main]'..
 		'listring[nodemeta:'..spos ..';src]'..
@@ -58,7 +82,14 @@ local function formspec(pos, progress)
 	return formspec
 end
 
-local function is_compostable(input)
+-- choose the seed
+function compost.get_rare_seed()
+	if math.random(100) == 1 then
+		return compost.rare_seeds[math.random(#compost.rare_seeds)]
+	end
+end
+
+function compost.is_compostable(input)
 	if compost.compostable_items[input] then
 		return true
 	end
@@ -79,15 +110,14 @@ local function swap_node(pos, name)
 	minetest.swap_node(pos, node)
 end
 
-local function count_input(pos)
-	local q = 0
+local function is_distributed(pos)
 	local meta = minetest.get_meta(pos)
-	local inv = meta:get_inventory()
-	local stacks = inv:get_list('src')
-	for k in pairs(stacks) do
-		q = q + inv:get_stack('src', k):get_count()
+	for k, stack in pairs(meta:get_inventory():get_list('src')) do
+		if stack:is_empty() then
+			return false
+		end
 	end
-	return q
+	return true
 end
 
 local function is_empty(pos)
@@ -116,41 +146,31 @@ end
 local function update_timer(pos)
 	local timer = minetest.get_node_timer(pos)
 	local meta = minetest.get_meta(pos)
-	local count = count_input(pos)
-	if not timer:is_started() and count >= 8 then
-		timer:start(30)
-		meta:set_int('progress', 0)
-		meta:set_string('infotext', i18n('progress: @1%', '0'))
-		return
-	end
-	if timer:is_started() and count < 8 then
-		timer:stop()
-		meta:set_string('infotext', i18n('To start composting, place some organic matter inside.'))
-		meta:set_int('progress', 0)
+	if not timer:is_started() then
+		if is_distributed(pos) then
+			timer:start(30)
+			meta:set_int('progress', 0)
+			meta:set_string('infotext', i18n('progress: @1%', '0'))
+			return
+		else
+			timer:stop()
+			meta:set_string('infotext', i18n('To start composting, place some organic matter inside.'))
+			meta:set_int('progress', 0)
+		end
 	end
 end
 
-local function create_compost(pos)
-	local q = 8
+function compost.create_compost(pos)
+	-- get items from compost inventory
 	local meta = minetest.get_meta(pos)
 	local inv = meta:get_inventory()
 	local stacks = inv:get_list('src')
-	for k in pairs(stacks) do
-		local stack = inv:get_stack('src', k)
-		if not stack:is_empty() then
-			local count = stack:get_count()
-			if count <= q then
-				inv:set_stack('src', k, '')
-				q = q - count
-			else
-				inv:set_stack('src', k, stack:get_name() .. ' ' .. (count - q))
-				q = 0
-				break
-			end
-		end
+	for k, stack in ipairs(stacks) do
+		stack:take_item()
+		inv:set_stack('src', k, stack)
 	end
-	local dirt_count = inv:get_stack('dst', 1):get_count()
-	inv:set_stack('dst', 1, 'default:dirt ' .. (dirt_count + 1))
+	local item = compost.get_rare_seed() or 'default:dirt'
+	inv:add_item("dst", item)
 end
 
 local function on_timer(pos)
@@ -159,10 +179,10 @@ local function on_timer(pos)
 	local progress = meta:get_int('progress') + 10
 
 	if progress >= 100 then
-		create_compost(pos)
+		compost.create_compost(pos)
 		progress = 0
 	end
-	if count_input(pos) >= 8 then
+	if is_distributed(pos) then
 		meta:set_string('infotext', i18n('progress: @1%', progress))
 		meta:set_int('progress', progress)
 		-- Update formspec to show progress arrow
@@ -185,7 +205,7 @@ local function on_construct(pos)
 	local meta = minetest.get_meta(pos)
 	local inv = meta:get_inventory()
 	inv:set_size('src', 8)
-	inv:set_size('dst', 1)
+	inv:set_size('dst', 4)
 	meta:set_string('infotext', i18n('To start composting, place some organic matter inside.'))
 	meta:set_int('progress', 0)
 end
@@ -211,7 +231,7 @@ local function can_dig(pos,player)
 end
 
 local function allow_metadata_inventory_put(pos, listname, index, stack, player)
-	if listname == 'src' and is_compostable(stack:get_name()) then
+	if listname == 'src' and compost.is_compostable(stack:get_name()) then
 		return stack:get_count()
 	else
 		return 0
@@ -248,10 +268,20 @@ local function on_punch(pos, node, player, pointed_thing)
 	if not wielded_item:is_empty() then
 		local wielded_item_name = wielded_item:get_name()
 		local wielded_item_count = wielded_item:get_count()
-		if is_compostable(wielded_item_name) and inv:room_for_item('src', wielded_item_name) then
-			player:set_wielded_item('')
-			inv:add_item('src', wielded_item_name .. ' ' .. wielded_item_count)
-			minetest.log('action', player:get_player_name() .. ' moves stuff to compost bin at ' .. minetest.pos_to_string(pos))
+		if compost.is_compostable(wielded_item_name) then
+			if is_distributed(pos) then
+				-- all slot contains someting. Just add if fits
+				player:set_wielded_item(inv:add_item('src', wielded_item))
+			else
+				-- not all slots filled. Add to a free slot
+				for i, stack in ipairs(inv:get_list('src')) do
+					if stack:is_empty() then
+						inv:set_stack('src', i, wielded_item)
+						player:set_wielded_item(nil)
+						break
+					end
+				end
+			end
 			update_nodebox(pos)
 			update_timer(pos)
 		end
