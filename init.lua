@@ -22,7 +22,7 @@ minetest.log('action', 'intllib loaded')
 end
 
 compost = {}
-compost.compostable_groups = {'flora', 'leaves', 'flower'}
+compost.compostable_groups = {'flora', 'leaves', 'flower', 'sapling'}
 compost.compostable_nodes = {
 	'default:cactus',
 	'default:papyrus',
@@ -62,6 +62,8 @@ end
 -- add to indexed table
 for k,_ in pairs(seeds_dedup) do
 	table.insert(compost.rare_seeds, k)
+	-- all output flora things are compostable
+	compost.compostable_items[k] = true
 end
 
 
@@ -146,18 +148,19 @@ end
 local function update_timer(pos)
 	local timer = minetest.get_node_timer(pos)
 	local meta = minetest.get_meta(pos)
-	if not timer:is_started() then
-		if is_distributed(pos) then
+	local progress = meta:get_int('progress') or 0
+	if not is_distributed(pos) then
+		timer:stop()
+		progress = 0
+		meta:set_int('progress', progress)
+		meta:set_string('infotext', i18n('To start composting, place some organic matter inside.'))
+	else
+		if not timer:is_started() then
 			timer:start(30)
-			meta:set_int('progress', 0)
-			meta:set_string('infotext', i18n('progress: @1%', '0'))
-			return
-		else
-			timer:stop()
-			meta:set_string('infotext', i18n('To start composting, place some organic matter inside.'))
-			meta:set_int('progress', 0)
 		end
+		meta:set_string('infotext', i18n('progress: @1%', progress))
 	end
+	meta:set_string('formspec', formspec(pos, progress))
 end
 
 function compost.create_compost(pos)
@@ -177,28 +180,13 @@ local function on_timer(pos)
 	local timer = minetest.get_node_timer(pos)
 	local meta = minetest.get_meta(pos)
 	local progress = meta:get_int('progress') + 10
-
 	if progress >= 100 then
 		compost.create_compost(pos)
 		progress = 0
+		update_nodebox(pos)
 	end
-	if is_distributed(pos) then
-		meta:set_string('infotext', i18n('progress: @1%', progress))
-		meta:set_int('progress', progress)
-		-- Update formspec to show progress arrow
-		local formspec = formspec(pos, progress)
-		meta:set_string("formspec", formspec)
-		return true
-	else
-		timer:stop()
-		meta:set_string('infotext', i18n('To start composting, place some organic matter inside.'))
-		progress = 0
-		meta:set_int('progress', progress)
-		-- Update formspec to show progress arrow
-		local formspec = formspec(pos, progress)
-		meta:set_string("formspec", formspec)
-		return false
-	end
+	meta:set_int('progress', progress)
+	update_timer(pos)
 end
 
 local function on_construct(pos)
@@ -206,18 +194,7 @@ local function on_construct(pos)
 	local inv = meta:get_inventory()
 	inv:set_size('src', 8)
 	inv:set_size('dst', 4)
-	meta:set_string('infotext', i18n('To start composting, place some organic matter inside.'))
-	meta:set_int('progress', 0)
-end
-
-local function on_rightclick(pos, node, clicker, itemstack)
-	local meta = minetest.get_meta(pos)
-	local progress = meta:get_int('progress')
-	minetest.show_formspec(
-		clicker:get_player_name(),
-		'compost:wood_barrel',
-		formspec(pos, progress)
-	)
+	update_timer(pos)
 end
 
 local function can_dig(pos,player)
@@ -265,10 +242,9 @@ local function on_punch(pos, node, player, pointed_thing)
 	local meta = minetest.get_meta(pos)
 	local inv = meta:get_inventory()
 	local wielded_item = player:get_wielded_item()
-	if not wielded_item:is_empty() then
-		local wielded_item_name = wielded_item:get_name()
-		local wielded_item_count = wielded_item:get_count()
-		if compost.is_compostable(wielded_item_name) then
+	if not wielded_item:is_empty() and wielded_item:get_name() ~= 'default:dirt' then
+		-- anything wielded. Try to place it to the compost
+		if compost.is_compostable(wielded_item:get_name()) then
 			if is_distributed(pos) then
 				-- all slot contains someting. Just add if fits
 				player:set_wielded_item(inv:add_item('src', wielded_item))
@@ -282,19 +258,23 @@ local function on_punch(pos, node, player, pointed_thing)
 					end
 				end
 			end
-			update_nodebox(pos)
-			update_timer(pos)
+		end
+	else
+		-- empty hand. Try to get from compost
+		local stacks = inv:get_list('dst')
+		for k, stack in ipairs(stacks) do
+			if not stack:is_empty() then
+				inv:set_stack('dst', k, wielded_item:add_item(stack))
+			end
+		end
+		if not wielded_item:is_empty() then
+			--player:set_wielded_item(wielded_item) -- does not work proper with empty wielded item?
+			player:get_inventory():set_stack(player:get_wield_list(), player:get_wield_index(), wielded_item)
+			minetest.log('action', player:get_player_name() .. ' takes stuff from compost bin at ' .. minetest.pos_to_string(pos))
 		end
 	end
-	local compost_count = inv:get_stack('dst', 1):get_count()
-	local wielded_item = player:get_wielded_item() --recheck
-	if compost_count > 0 and wielded_item:is_empty() then
-		inv:set_stack('dst', 1, '')
-		player:set_wielded_item('default:dirt ' .. compost_count)
-		minetest.log('action', player:get_player_name() .. ' takes stuff from compost bin at ' .. minetest.pos_to_string(pos))
-		update_nodebox(pos)
-		update_timer(pos)
-	end
+	update_nodebox(pos)
+	update_timer(pos)
 end
 
 minetest.register_node("compost:wood_barrel_empty", {
@@ -320,7 +300,6 @@ minetest.register_node("compost:wood_barrel_empty", {
 	sounds =  default.node_sound_wood_defaults(),
 	on_timer = on_timer,
 	on_construct = on_construct,
-	on_rightclick = on_rightclick,
 	can_dig = can_dig,
 	allow_metadata_inventory_put = allow_metadata_inventory_put,
 	allow_metadata_inventory_move = allow_metadata_inventory_move,
@@ -356,7 +335,6 @@ minetest.register_node("compost:wood_barrel", {
 	sounds =  default.node_sound_wood_defaults(),
 	on_timer = on_timer,
 	on_construct = on_construct,
-	on_rightclick = on_rightclick,
 	can_dig = can_dig,
 	allow_metadata_inventory_put = allow_metadata_inventory_put,
 	allow_metadata_inventory_move = allow_metadata_inventory_move,
@@ -370,7 +348,7 @@ minetest.register_craft({
 	recipe = {
 		{"group:wood", "", "group:wood"},
 		{"group:wood", "", "group:wood"},
-		{"group:wood", "", "group:wood"}
+		{"group:wood", "group:stick", "group:wood"}
 	}
 })
 
