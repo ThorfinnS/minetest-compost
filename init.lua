@@ -229,6 +229,13 @@ local function on_metadata_inventory_take(pos, listname, index, stack, player)
 	return
 end
 
+local function on_metadata_inventory_move(pos, from_list, from_index, to_list, to_index, count, player)
+	update_timer(pos)
+	update_nodebox(pos)
+	minetest.log('action', player:get_player_name() .. ' mives stuff inside compost bin at ' .. minetest.pos_to_string(pos))
+	return
+end
+
 local function allow_metadata_inventory_move(pos, from_list, from_index, to_list, to_index, count, player)
 	local inv = minetest.get_meta(pos):get_inventory()
 	if from_list == to_list then 
@@ -305,6 +312,7 @@ minetest.register_node("compost:wood_barrel_empty", {
 	allow_metadata_inventory_move = allow_metadata_inventory_move,
 	on_metadata_inventory_put = on_metadata_inventory_put,
 	on_metadata_inventory_take = on_metadata_inventory_take,
+	on_metadata_inventory_move = on_metadata_inventory_move,
 	on_punch = on_punch,
 })
 
@@ -340,6 +348,7 @@ minetest.register_node("compost:wood_barrel", {
 	allow_metadata_inventory_move = allow_metadata_inventory_move,
 	on_metadata_inventory_put = on_metadata_inventory_put,
 	on_metadata_inventory_take = on_metadata_inventory_take,
+	on_metadata_inventory_move = on_metadata_inventory_move,
 	on_punch = on_punch,
 })
 
